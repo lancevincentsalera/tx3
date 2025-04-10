@@ -1,4 +1,7 @@
-use pallas::{codec::utils::MaybeIndefArray, ledger::primitives::conway as primitives};
+use pallas::{
+    codec::utils::{KeepRaw, MaybeIndefArray, Nullable},
+    ledger::primitives::conway as primitives,
+};
 use std::{collections::BTreeMap, str::FromStr};
 use tx3_lang::ir;
 
@@ -270,10 +273,10 @@ fn eval_minutxo_constructor(&self, ctr: &ir::AssetConstructor) -> Result<primiti
 }
     */
 
-fn compile_output_block(
-    ir: &ir::Output,
-    pparams: &PParams,
-) -> Result<primitives::TransactionOutput, Error> {
+fn compile_output_block<'a>(
+    ir: &'a ir::Output,
+    pparams: &'a PParams,
+) -> Result<primitives::TransactionOutput<'a>, Error> {
     let address = ir
         .address
         .as_ref()
@@ -297,14 +300,18 @@ fn compile_output_block(
 
     let datum_option = ir.datum.as_ref().map(compile_data_expr).transpose()?;
 
-    let output =
-        primitives::TransactionOutput::PostAlonzo(primitives::PostAlonzoTransactionOutput {
+    let output = primitives::TransactionOutput::PostAlonzo(KeepRaw::from(
+        primitives::PostAlonzoTransactionOutput {
             address: address.to_vec().into(),
             value,
-            datum_option: datum_option
-                .map(|x| primitives::DatumOption::Data(pallas::codec::utils::CborWrap(x))),
+            datum_option: datum_option.map(|x| {
+                KeepRaw::from(primitives::DatumOption::Data(
+                    pallas::codec::utils::CborWrap(x.into()),
+                ))
+            }),
             script_ref: None, // TODO: add script ref
-        });
+        },
+    ));
 
     Ok(output)
 }
@@ -345,10 +352,10 @@ fn compile_inputs(tx: &ir::Tx) -> Result<Vec<primitives::TransactionInput>, Erro
     Ok(refs)
 }
 
-fn compile_outputs(
-    tx: &ir::Tx,
-    pparams: &PParams,
-) -> Result<Vec<primitives::TransactionOutput>, Error> {
+fn compile_outputs<'a>(
+    tx: &'a ir::Tx,
+    pparams: &'a PParams,
+) -> Result<Vec<primitives::TransactionOutput<'a>>, Error> {
     let resolved = tx
         .outputs
         .iter()
@@ -399,7 +406,10 @@ fn compile_reference_inputs(tx: &ir::Tx) -> Result<Vec<primitives::TransactionIn
     Ok(refs)
 }
 
-fn compile_tx_body(tx: &ir::Tx, pparams: &PParams) -> Result<primitives::TransactionBody, Error> {
+fn compile_tx_body<'a>(
+    tx: &'a ir::Tx,
+    pparams: &'a PParams,
+) -> Result<primitives::TransactionBody<'a>, Error> {
     let out = primitives::TransactionBody {
         inputs: compile_inputs(tx)?.into(),
         outputs: compile_outputs(tx, pparams)?,
@@ -469,16 +479,16 @@ fn compile_spend_redeemers(
     let mut compiled_inputs = compiled_body.inputs.iter().collect::<Vec<_>>();
     compiled_inputs.sort_by_key(|x| (x.transaction_id, x.index));
 
-    let mut redeemers = Vec::new();
-
-    for input in tx.inputs.iter() {
-        for ref_ in input.refs.iter() {
-            let redeemer = compile_single_spend_redeemer(ref_, input, compiled_inputs.as_slice())?;
-            redeemers.push(redeemer);
-        }
-    }
-
-    Ok(redeemers)
+    tx.inputs
+        .iter()
+        .filter(|input| input.redeemer.is_some())
+        .flat_map(|input| {
+            input.refs.iter().map({
+                let value = compiled_inputs.clone();
+                move |ref_| compile_single_spend_redeemer(ref_, input, value.as_slice())
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
 }
 
 fn compile_mint_redeemers(_tx: &ir::Tx) -> Result<Vec<primitives::Redeemer>, Error> {
@@ -517,7 +527,7 @@ fn compile_mint_redeemers(_tx: &ir::Tx) -> Result<Vec<primitives::Redeemer>, Err
 fn compile_redeemers(
     tx: &ir::Tx,
     compiled_body: &primitives::TransactionBody,
-) -> Result<Option<primitives::Redeemers>, Error> {
+) -> Result<Option<KeepRaw<'static, primitives::Redeemers>>, Error> {
     let spend_redeemers = compile_spend_redeemers(tx, compiled_body)?;
     let mint_redeemers = compile_mint_redeemers(tx)?;
 
@@ -527,16 +537,16 @@ fn compile_redeemers(
     if redeemers.is_empty() {
         Ok(None)
     } else {
-        Ok(Some(primitives::Redeemers::List(
+        Ok(Some(KeepRaw::from(primitives::Redeemers::List(
             MaybeIndefArray::Def(redeemers).to_vec(),
-        )))
+        ))))
     }
 }
 
 fn compile_witness_set(
     tx: &ir::Tx,
     compiled_body: &primitives::TransactionBody,
-) -> Result<primitives::WitnessSet, Error> {
+) -> Result<primitives::WitnessSet<'static>, Error> {
     let out = primitives::WitnessSet {
         redeemer: compile_redeemers(tx, compiled_body)?,
         vkeywitness: None,
@@ -551,15 +561,15 @@ fn compile_witness_set(
     Ok(out)
 }
 
-pub fn compile_tx(tx: &ir::Tx, pparams: &PParams) -> Result<primitives::Tx, Error> {
+pub fn compile_tx<'a>(tx: &'a ir::Tx, pparams: &'a PParams) -> Result<primitives::Tx<'a>, Error> {
     let transaction_body = compile_tx_body(tx, pparams)?;
     let transaction_witness_set = compile_witness_set(tx, &transaction_body)?;
     let auxiliary_data = compile_auxiliary_data(tx)?;
 
     let tx = primitives::Tx {
-        transaction_body,
-        transaction_witness_set,
-        auxiliary_data: auxiliary_data.into(),
+        transaction_body: KeepRaw::from(transaction_body),
+        transaction_witness_set: KeepRaw::from(transaction_witness_set),
+        auxiliary_data: Nullable::from(auxiliary_data.map(KeepRaw::from)),
         success: true,
     };
 
