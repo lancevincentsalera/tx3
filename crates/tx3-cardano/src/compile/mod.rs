@@ -527,7 +527,7 @@ fn compile_mint_redeemers(_tx: &ir::Tx) -> Result<Vec<primitives::Redeemer>, Err
 fn compile_redeemers(
     tx: &ir::Tx,
     compiled_body: &primitives::TransactionBody,
-) -> Result<Option<KeepRaw<'static, primitives::Redeemers>>, Error> {
+) -> Result<Option<primitives::Redeemers>, Error> {
     let spend_redeemers = compile_spend_redeemers(tx, compiled_body)?;
     let mint_redeemers = compile_mint_redeemers(tx)?;
 
@@ -537,9 +537,9 @@ fn compile_redeemers(
     if redeemers.is_empty() {
         Ok(None)
     } else {
-        Ok(Some(KeepRaw::from(primitives::Redeemers::List(
+        Ok(Some(primitives::Redeemers::List(
             MaybeIndefArray::Def(redeemers).to_vec(),
-        ))))
+        )))
     }
 }
 
@@ -548,7 +548,7 @@ fn compile_witness_set(
     compiled_body: &primitives::TransactionBody,
 ) -> Result<primitives::WitnessSet<'static>, Error> {
     let out = primitives::WitnessSet {
-        redeemer: compile_redeemers(tx, compiled_body)?,
+        redeemer: compile_redeemers(tx, compiled_body).map(|x| x.map(KeepRaw::from))?,
         vkeywitness: None,
         native_script: None,
         bootstrap_witness: None,
