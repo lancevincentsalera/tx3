@@ -1,0 +1,277 @@
+party Lender;
+party Borrower;
+party Platform;
+policy Validator = 0x6d66991f741f352129ae8b3f32f9b5b45220f0ff2bc66efe0f5f77c3;
+
+asset Collateral = 0x8b05e87a51c1d4a0fa888d2bb14dbc25e8c343ea379a171b63aa84a0.MYCOLLATERAL;
+
+type LendTokenDetails {
+    ada_owner: Bytes,
+    policy_id: Bytes,
+    asset_name: Bytes,
+    token_amount: Int,
+    loan_amount: Int,
+    interest_amount: Int,
+    loan_duration: Int,
+    output_reference: UtxoRef,
+}
+
+type BorrowTokenDetails {
+    ada_owner: Bytes,
+    asset_owner: Bytes,
+    policy_id: Bytes,
+    asset_name: Bytes,
+    token_amount: Int,
+    loan_amount: Int,
+    interest_amount: Int,
+    loan_end_time: Int,
+    output_reference: UtxoRef,
+}
+
+type RepayTokenDetails {
+    ada_owner: Bytes,
+    token_amount: Int,
+    loan_amount: Int,
+    interest_amount: Int,
+    output_reference: UtxoRef,
+}
+
+type PaymentDatum {
+  output_reference: UtxoRef,
+}
+
+type TokenAction {
+    BorrowTokenAction,
+    RepayTokenAction,
+    ClaimTokenAction,
+    ForecloseTokenAction,
+    CancelTokenAction,
+}
+
+tx Lend(
+    policy_id: Bytes,
+    asset_name: Bytes,
+    token_amount: Int,
+    loan_amount: Int,
+    interest_amount: Int,
+    loan_duration: Int,
+    output_reference: UtxoRef,
+) {
+    input source {
+        from: Lender,
+        min_amount: Ada(loan_amount),
+    }
+
+    output {
+        to: Validator,
+        amount: Ada(loan_amount),
+        datum: LendTokenDetails {
+            ada_owner: Lender,
+            policy_id: policy_id,
+            asset_name: asset_name,
+            token_amount: token_amount,
+            loan_amount: loan_amount,
+            interest_amount: interest_amount,
+            loan_duration: loan_duration,
+            output_reference: output_reference,
+        },
+    }
+
+    output {
+        to: Lender,
+        amount: source - Ada(loan_amount) - fees,
+    }
+}
+
+tx Borrow(
+    policy_id: Bytes,
+    asset_name: Bytes,
+    token_amount: Int,
+    loan_amount: Int,
+    interest_amount: Int,
+    loan_end_time: Int,
+    lend_position: UtxoRef,
+    script_ref: UtxoRef,
+    platform_fee: Int,
+) {
+    input locked {
+        from: Validator,
+        min_amount: Ada(loan_amount),
+        ref: lend_position,
+        redeemer: TokenAction::BorrowTokenAction { },
+    }
+
+    input script {
+        from: Validator,
+        ref: script_ref,
+    }
+
+    input borrow_source {
+        from: Borrower,
+        min_amount: Collateral(token_amount) + Ada(platform_fee),
+    }
+
+    output {
+        to: Validator,
+        amount: Collateral(token_amount),
+        datum: BorrowTokenDetails {
+            ada_owner: Lender,
+            asset_owner: Borrower,
+            policy_id: policy_id,
+            asset_name: asset_name,
+            token_amount: token_amount,
+            loan_amount: loan_amount,
+            interest_amount: interest_amount,
+            loan_end_time: loan_end_time,
+            output_reference: lend_position,
+        },
+    }
+
+    output {
+        to: Platform,
+        amount: Ada(platform_fee),
+        datum: PaymentDatum {
+            output_reference: lend_position,
+        },
+    }
+
+    output {
+        to: Borrower,
+        amount: locked + borrow_source - Collateral(token_amount) - Ada(platform_fee) - fees,
+    }
+}
+
+
+tx Repay(
+    token_amount: Int,
+    loan_amount: Int,
+    interest_amount: Int,
+    borrow_position: UtxoRef,
+    script_ref: UtxoRef,
+) {
+    input locked {
+        from: Validator,
+        min_amount: Collateral(token_amount),
+        ref: borrow_position,
+        redeemer: TokenAction::RepayTokenAction { },
+    }
+
+    input script {
+        from: Validator,
+        ref: script_ref,
+    }
+
+    output {
+        to: Validator,
+        amount: Ada(loan_amount + interest_amount),
+        datum: RepayTokenDetails {
+            ada_owner: Lender,
+            token_amount: token_amount,
+            loan_amount: loan_amount,
+            interest_amount: interest_amount,
+            output_reference: borrow_position,
+        },
+    }
+
+    output {
+        to: Borrower,
+        amount: locked - Ada(loan_amount + interest_amount) - fees,
+    }
+}
+
+tx Foreclose(
+    token_amount: Int,
+    platform_fee: Int,
+    borrow_position: UtxoRef,
+    script_ref: UtxoRef,
+) {
+    input locked {
+        from: Validator,
+        min_amount: Collateral(token_amount),
+        ref: borrow_position,
+        redeemer: TokenAction::ForecloseTokenAction { },
+    }
+
+    input script {
+        from: Validator,
+        ref: script_ref,
+    }
+
+    input platform {
+        from: Lender,
+        min_amount: Ada(platform_fee),
+    }
+
+    output {
+        to: Platform,
+        amount: Ada(platform_fee),
+        datum: PaymentDatum {
+            output_reference: borrow_position,
+        },
+    }
+
+    output {
+        to: Lender,
+        amount: locked + platform - Ada(platform_fee) - fees,
+    }
+}
+
+tx Claim(
+    token_amount: Int,
+    platform_fee: Int,
+    repay_position: UtxoRef,
+    script_ref: UtxoRef,
+) {
+    input locked {
+        from: Validator,
+        min_amount: Collateral(token_amount),
+        ref: repay_position,
+        redeemer: TokenAction::ClaimTokenAction { },
+    }
+
+    input script {
+        from: Validator,
+        ref: script_ref,
+    }
+
+    input platform {
+        from: Lender,
+        min_amount: Ada(platform_fee),
+    }
+
+    output {
+        to: Platform,
+        amount: Ada(platform_fee),
+        datum: PaymentDatum {
+            output_reference: repay_position,
+        },
+    }
+
+    output {
+        to: Lender,
+        amount: locked + platform - Ada(platform_fee) - fees,
+    }
+}
+
+tx Cancel(
+    loan_amount: Int,
+    lend_position: UtxoRef,
+    script_ref: UtxoRef,
+) {
+    input locked {
+        from: Validator,
+        min_amount: Ada(loan_amount),
+        ref: lend_position,
+        redeemer: TokenAction::CancelTokenAction { },
+    }
+
+    input script {
+        from: Validator,
+        ref: script_ref,
+    }
+
+    output {
+        to: Lender,
+        amount: locked - fees,
+    }
+}
